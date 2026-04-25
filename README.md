@@ -163,6 +163,10 @@ md2pdf/
 
 Issues and pull requests are welcome at <https://github.com/pinusmassoniana/md2pdf>.
 
+- See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, conventions, and the PR workflow.
+- See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community expectations.
+- See [`SECURITY.md`](SECURITY.md) before reporting a security vulnerability — **do not** open a public issue.
+
 If you add a feature that introduces a new Markdown construct, please:
 1. Add or extend an example in `examples/` that exercises it.
 2. Document the syntax in `md2pdf_format.md`.

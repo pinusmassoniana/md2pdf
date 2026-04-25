@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Markdown format reference
+    url: https://github.com/pinusmassoniana/md2pdf/blob/main/md2pdf_format.md
+    about: Full syntax and CLI reference — please skim this before opening an issue.
+  - name: Runnable examples
+    url: https://github.com/pinusmassoniana/md2pdf/tree/main/examples
+    about: Working demos of every feature, with commands.
+  - name: Security vulnerability
+    url: https://github.com/pinusmassoniana/md2pdf/security/advisories/new
+    about: Report security issues privately. Do not open a public issue.
