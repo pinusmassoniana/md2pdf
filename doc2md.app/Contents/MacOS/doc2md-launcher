@@ -1,0 +1,215 @@
+#!/bin/bash
+# doc2md macOS app launcher
+# Converter PDF/DOCX/PPTX -> Markdown
+# Accepts files via drag-and-drop or open-with
+
+DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
+LOG="/tmp/doc2md.log"
+> "$LOG"
+
+# Use the symlink or the local copy of doc2md.py
+if [ -L "$DIR/doc2md.py" ] && [ -f "$(readlink "$DIR/doc2md.py")" ]; then
+    SCRIPT="$(readlink -f "$DIR/doc2md.py")"
+elif [ -f "$DIR/doc2md.py" ]; then
+    SCRIPT="$DIR/doc2md.py"
+else
+    osascript -e 'display alert "doc2md: Error" message "doc2md.py not found in Resources" as critical'
+    exit 1
+fi
+
+# --- Python ---
+PYTHON="/usr/bin/python3"
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="$(command -v python3 2>/dev/null)"
+fi
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+    osascript -e 'display alert "doc2md: Error" message "python3 not found. Install the Command Line Tools:\n\nxcode-select --install" as critical'
+    exit 1
+fi
+
+# Apple Silicon -- force arm64
+if [ "$(uname -m)" = "arm64" ]; then
+    PYTHON_CMD=(arch -arm64 "$PYTHON")
+else
+    PYTHON_CMD=("$PYTHON")
+fi
+
+# --- Check / install PyMuPDF ---
+"${PYTHON_CMD[@]}" -c "import fitz" 2>/dev/null
+if [ $? -ne 0 ]; then
+    CHOICE=$(osascript -e 'button returned of (display alert "doc2md: PyMuPDF not found" message "The PyMuPDF module is required to convert PDFs. Install automatically?" buttons {"Cancel", "Install"} default button "Install" as warning)')
+    if [ "$CHOICE" = "Install" ]; then
+        osascript -e 'display notification "Installing PyMuPDF..." with title "doc2md"'
+        INSTALL_OUT=$("${PYTHON_CMD[@]}" -m pip install --user PyMuPDF 2>&1)
+        if [ $? -ne 0 ]; then
+            osascript -e "display alert \"doc2md: Install error\" message \"$(echo "$INSTALL_OUT" | tail -5)\" as critical"
+            exit 1
+        fi
+        osascript -e 'display notification "PyMuPDF installed!" with title "doc2md" sound name "Glass"'
+    else
+        exit 0
+    fi
+fi
+
+# --- Check / install python-docx ---
+"${PYTHON_CMD[@]}" -c "import docx" 2>/dev/null
+if [ $? -ne 0 ]; then
+    CHOICE=$(osascript -e 'button returned of (display alert "doc2md: python-docx not found" message "The python-docx module is required to convert Word documents. Install?" buttons {"Skip", "Install"} default button "Install" as warning)')
+    if [ "$CHOICE" = "Install" ]; then
+        osascript -e 'display notification "Installing python-docx..." with title "doc2md"'
+        INSTALL_OUT=$("${PYTHON_CMD[@]}" -m pip install --user python-docx 2>&1)
+        if [ $? -ne 0 ]; then
+            osascript -e "display alert \"doc2md: Install error\" message \"$(echo "$INSTALL_OUT" | tail -5)\" as warning"
+        else
+            osascript -e 'display notification "python-docx installed!" with title "doc2md" sound name "Glass"'
+        fi
+    fi
+fi
+
+# --- Check / install python-pptx ---
+"${PYTHON_CMD[@]}" -c "import pptx" 2>/dev/null
+if [ $? -ne 0 ]; then
+    CHOICE=$(osascript -e 'button returned of (display alert "doc2md: python-pptx not found" message "The python-pptx module is required to convert PowerPoint files. Install?" buttons {"Skip", "Install"} default button "Install" as warning)')
+    if [ "$CHOICE" = "Install" ]; then
+        osascript -e 'display notification "Installing python-pptx..." with title "doc2md"'
+        INSTALL_OUT=$("${PYTHON_CMD[@]}" -m pip install --user python-pptx 2>&1)
+        if [ $? -ne 0 ]; then
+            osascript -e "display alert \"doc2md: Install error\" message \"$(echo "$INSTALL_OUT" | tail -5)\" as warning"
+        else
+            osascript -e 'display notification "python-pptx installed!" with title "doc2md" sound name "Glass"'
+        fi
+    fi
+fi
+
+# --- Input files ---
+if [ $# -eq 0 ]; then
+    FILES=$(osascript -e '
+        set theFiles to choose file with prompt "Choose files to convert to Markdown:" of type {"pdf", "docx", "pptx", "ppt", "doc"} with multiple selections allowed
+        set posixPaths to ""
+        repeat with f in theFiles
+            set posixPaths to posixPaths & POSIX path of f & linefeed
+        end repeat
+        return posixPaths
+    ' 2>/dev/null)
+
+    if [ -z "$FILES" ]; then
+        exit 0
+    fi
+
+    set --
+    while IFS= read -r line; do
+        [ -n "$line" ] && set -- "$@" "$line"
+    done <<< "$FILES"
+fi
+
+[ $# -eq 0 ] && exit 0
+
+# --- Settings dialog ---
+if [ -x "$DIR/settings_gui" ]; then
+    SETTINGS=$("$DIR/settings_gui" "$@" 2>/dev/null)
+else
+    SETTINGS=$(osascript "$DIR/settings_dialog.applescript" "$@" 2>/dev/null)
+fi
+
+if [ -z "$SETTINGS" ] || [ "$SETTINGS" = "CANCEL" ]; then
+    exit 0
+fi
+
+# Parse: outputDir|imageDir|extractImages|force|openResult
+IFS='|' read -r OUTPUT_DIR IMAGE_DIR EXTRACT_IMAGES FORCE OPEN_RESULT <<< "$SETTINGS"
+
+# --- Converter arguments ---
+ARGS=("--force")
+
+[ -n "$IMAGE_DIR" ] && ARGS+=("--image-dir" "$IMAGE_DIR")
+[ "$EXTRACT_IMAGES" = "no" ] && ARGS+=("--no-images")
+
+# --- Conversion ---
+SUCCESS=0
+FAIL=0
+MD_FILES=()
+ERRORS=""
+
+show_progress() {
+    local current=$1 total=$2 filename=$3
+    osascript -e "display notification \"[$current/$total] $filename\" with title \"doc2md\"" 2>/dev/null &
+}
+
+# Collect cleaned-up paths
+CLEAN_FILES=()
+for FILE in "$@"; do
+    # URL-decode only for file:// URI (Finder drag-drop)
+    if [[ "$FILE" == file://* ]]; then
+        FILE="${FILE#file://}"
+        FILE=$(printf '%b' "${FILE//%/\\x}")
+    fi
+    if [ -f "$FILE" ]; then
+        CLEAN_FILES+=("$FILE")
+    else
+        FAIL=$((FAIL + 1))
+        ERRORS="$ERRORS\nNot found: $(basename "$FILE")"
+    fi
+done
+
+TOTAL=${#CLEAN_FILES[@]}
+IDX=0
+
+for FILE in "${CLEAN_FILES[@]}"; do
+    IDX=$((IDX + 1))
+
+    BASENAME=$(basename "$FILE")
+    BASENAME_NOEXT="${BASENAME%.*}"
+
+    if [ -n "$OUTPUT_DIR" ] && [ -d "$OUTPUT_DIR" ]; then
+        OUTPUT="$OUTPUT_DIR/$BASENAME_NOEXT.md"
+    else
+        OUTPUT="${FILE%.*}.md"
+    fi
+
+    FILE_ARGS=("${ARGS[@]}" -o "$OUTPUT")
+
+    [ $TOTAL -gt 1 ] && show_progress $IDX $TOTAL "$BASENAME"
+
+    CONVERT_ERR=$("${PYTHON_CMD[@]}" "$SCRIPT" "$FILE" "${FILE_ARGS[@]}" 2>&1)
+
+    if [ $? -eq 0 ]; then
+        SUCCESS=$((SUCCESS + 1))
+        MD_FILES+=("$OUTPUT")
+    else
+        FAIL=$((FAIL + 1))
+        LAST_ERR=$(echo "$CONVERT_ERR" | grep -E "(Error|Traceback)" | tail -1)
+        [ -z "$LAST_ERR" ] && LAST_ERR=$(echo "$CONVERT_ERR" | tail -1)
+        ERRORS="$ERRORS\n$(basename "$FILE"): $LAST_ERR"
+    fi
+
+    echo "$CONVERT_ERR" >> "$LOG"
+done
+
+# --- Result ---
+if [ $SUCCESS -gt 0 ] && [ $FAIL -eq 0 ]; then
+    if [ $SUCCESS -eq 1 ]; then
+        MSG="Markdown created: $(basename "${MD_FILES[0]}")"
+    else
+        MSG="Markdown files created: $SUCCESS"
+    fi
+    osascript -e "display notification \"$MSG\" with title \"doc2md\" sound name \"Glass\""
+
+    if [ "$OPEN_RESULT" = "yes" ]; then
+        for MD in "${MD_FILES[@]}"; do
+            open "$MD"
+        done
+    fi
+
+elif [ $SUCCESS -gt 0 ] && [ $FAIL -gt 0 ]; then
+    osascript -e "display notification \"Created: $SUCCESS, errors: $FAIL\" with title \"doc2md\" sound name \"Glass\""
+    osascript -e "display alert \"doc2md: Partial success\" message \"Created MD: $SUCCESS\nErrors:$(echo -e "$ERRORS")\" as warning"
+
+    if [ "$OPEN_RESULT" = "yes" ]; then
+        for MD in "${MD_FILES[@]}"; do
+            open "$MD"
+        done
+    fi
+else
+    ERR_DETAIL=$(echo -e "$ERRORS" | head -10)
+    osascript -e "display alert \"doc2md: Error\" message \"Could not convert.\n$ERR_DETAIL\" as critical"
+fi

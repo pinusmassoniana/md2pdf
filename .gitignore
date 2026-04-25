@@ -1,0 +1,28 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Editor / backup
+*.bak
+*~
+.idea/
+.vscode/
+
+# Code-review-graph (local index)
+.code-review-graph/
+
+# Generated outputs in repo root (examples/ outputs are committed-out via patterns below if needed)
+/*.pdf
+/*.html
+/merged_*.md
+
+# Build artifacts
+build/
+dist/

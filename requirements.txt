@@ -1,0 +1,15 @@
+# Required
+reportlab>=4.0
+
+# Optional — needed for ```chart``` blocks (rendered as placeholders without it)
+matplotlib>=3.5
+
+# Optional — needed by --qr (QR codes in headers)
+qrcode[pil]>=7.4
+
+# Optional — needed by doc2md to convert .docx and .pptx
+python-docx>=1.0
+python-pptx>=0.6
+
+# Optional — needed by doc2md to convert .pdf
+PyMuPDF>=1.23

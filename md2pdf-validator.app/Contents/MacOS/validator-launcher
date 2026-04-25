@@ -1,0 +1,85 @@
+#!/bin/bash
+# md2pdf-validator — verify authorship metadata of a generated PDF
+# Accepts a .pdf file via drag-and-drop, open-with, or with no arguments (file picker dialog)
+
+DIR="$(cd "$(dirname "$0")/../Resources" && pwd)"
+LOG="/tmp/md2pdf-validator.log"
+> "$LOG"
+
+# --- Python ---
+PYTHON="/usr/bin/python3"
+if [ ! -x "$PYTHON" ]; then
+    PYTHON="$(command -v python3 2>/dev/null)"
+fi
+if [ -z "$PYTHON" ] || [ ! -x "$PYTHON" ]; then
+    osascript -e 'display alert "md2pdf-validator: Error" message "python3 not found. Install the Command Line Tools:\n\nxcode-select --install" as critical'
+    exit 1
+fi
+
+# On Apple Silicon, force arm64
+PYTHON_CMD=("$PYTHON")
+if [ "$(uname -m)" = "arm64" ]; then
+    PYTHON_CMD=("arch" "-arm64" "$PYTHON")
+fi
+
+# --- md2pdf.py script ---
+if [ -L "$DIR/md2pdf.py" ] && [ -f "$(readlink "$DIR/md2pdf.py")" ]; then
+    SCRIPT="$(readlink -f "$DIR/md2pdf.py")"
+elif [ -f "$DIR/md2pdf.py" ]; then
+    SCRIPT="$DIR/md2pdf.py"
+else
+    osascript -e 'display alert "md2pdf-validator: Error" message "md2pdf.py not found in Resources" as critical'
+    exit 1
+fi
+
+# --- PDF input file ---
+PDF=""
+if [ $# -eq 0 ]; then
+    # No arguments — show file picker
+    PDF=$(osascript -e 'POSIX path of (choose file of type {"com.adobe.pdf"} with prompt "Choose a PDF to verify")' 2>/dev/null)
+    [ -z "$PDF" ] && exit 0
+else
+    PDF="$1"
+    # URL-decode for file:// URI (Finder drag-drop)
+    if [[ "$PDF" == file://* ]]; then
+        PDF="${PDF#file://}"
+        PDF=$(printf '%b' "${PDF//%/\\x}")
+    fi
+fi
+
+if [ ! -f "$PDF" ]; then
+    osascript -e "display alert \"md2pdf-validator: Error\" message \"PDF not found: $(basename "$PDF")\" as critical"
+    exit 1
+fi
+
+# --- Extract metadata ---
+JSON=$("${PYTHON_CMD[@]}" "$SCRIPT" dummy --inspect "$PDF" 2>"$LOG")
+
+if [ -z "$JSON" ]; then
+    ERR=$(cat "$LOG")
+    osascript -e "display alert \"md2pdf-validator: Error\" message \"Could not read PDF:\n$ERR\" as critical"
+    exit 1
+fi
+
+# --- GUI ---
+GUI="$DIR/../MacOS/validator_gui"
+if [ ! -x "$GUI" ]; then
+    GUI="$DIR/validator_gui"
+fi
+
+RESULT=$("$GUI" "$JSON" "$PDF" 2>/dev/null)
+
+# --- Hash verification (when user selected .md files) ---
+if [ -n "$RESULT" ] && [ "$RESULT" != "CLOSE" ]; then
+    # Separator ;;;
+    IFS=';;;' read -ra MD_FILES <<< "$RESULT"
+    # Filter out empty entries
+    CLEAN_MD=()
+    for f in "${MD_FILES[@]}"; do
+        [ -n "$f" ] && [ -f "$f" ] && CLEAN_MD+=("$f")
+    done
+    if [ ${#CLEAN_MD[@]} -gt 0 ]; then
+        VERIFY=$("${PYTHON_CMD[@]}" "$SCRIPT" "${CLEAN_MD[@]}" --verify "$PDF" 2>&1)
+        osascript -e "display alert \"md2pdf-validator\" message \"$VERIFY\""
+    fi
+fi
